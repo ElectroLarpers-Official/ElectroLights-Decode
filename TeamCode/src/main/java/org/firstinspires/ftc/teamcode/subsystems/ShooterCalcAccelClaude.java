@@ -185,6 +185,40 @@ public class ShooterCalcAccelClaude implements Subsystem {
      *  unaffected at any setting. */
     public static double positiveAccelGain = 0.5;
 
+    // ---- BIOBUZZ HIVE mode ------------------------------------------------
+    // Geometry from Competition Manual V1, Figures 9-9 to 9-11, rebuilt as a
+    // rigid body: up-cell lower lip 53.5 in, apex 65.6 in (model reproduces
+    // the manual's 65.6 to 0.02 in from the other numbers). The opening is a
+    // house-shaped window, 20 in wide x 14 in tall, whose plane sits 60 deg
+    // from horizontal - its outward normal points 30 deg above horizontal.
+    //
+    // AIM POINT: the window centroid, 58.32 in above the tiles and 16.49 in
+    // out from the pivot axis. It is a fixed point in space, so unlike the
+    // DECODE regression the target height does not vary with range: the
+    // DECODE curve aimed at a virtual point above the goal to clear the lip
+    // and bank off the backboard; the HIVE window can be hit square-on.
+    //
+    // ENTRY: -30 deg = perpendicular to the window, full 11.2 in usable
+    // aperture for a 72.3 mm ball. Costs at most 0.7% launch speed vs the
+    // minimum-speed arc anywhere from 20 to 160 in, keeps the hood inside
+    // 46-80 deg, and the highest apex (74 in) is far under the 10 ft ruling.
+
+    /** Toggle: aim at the BIOBUZZ HIVE instead of the DECODE goal. */
+    public static boolean hiveMode = true;
+    public static void toggleHiveMode() { hiveMode = !hiveMode; }
+
+    /** Window centroid above the tiles, inches. */
+    public static double hiveAimHeight = 65;
+    /** Shooter exit above the tiles, inches. Target heights in this solver
+     *  are relative to the launch point. */
+    public static double launchHeight = 14.0;
+    /** Entry angle into the window, degrees. If balls rebound off the back
+     *  wall and out, try -40: under 1% speed cost, lands on the sloped
+     *  floor first instead of hitting the back wall head-on. */
+    public static double hiveEntryDeg = -50.0;
+    /** Calibration trim on aim height, inches. Consistently short -> raise. */
+    public static double hiveHeightTrim = 0.0;
+
     // ---- Hood compensation (ported from RevAmped's SimpleShooterMath) ------
     // RevAmped run TWO independent hood offsets and add them to the hood
     // position: hoodPos += hoodCompOffset + SOTMOffset. Both are here.
@@ -335,6 +369,7 @@ public class ShooterCalcAccelClaude implements Subsystem {
 
     /** Target height above the launch point, inches, blended across zones. */
     public static double targetHeight(double range) {
+        if (hiveMode) return hiveAimHeight - launchHeight + hiveHeightTrim;
         double poly = 0.0032 * range * range - 0.6653 * range + 66.888;
         if(range <= CLOSE_ZONE_END) return poly + 0.3;
         if (range <= FAR_ZONE_START) return poly;
@@ -345,6 +380,7 @@ public class ShooterCalcAccelClaude implements Subsystem {
 
     /** Desired entry angle, radians, blended across zones. */
     public static double entryAngle(double range) {
+        if (hiveMode) return Math.toRadians(hiveEntryDeg);
         double closeDeg = 0.6106 * range - 57.478;
         double midDeg = SCORE_ANGLE;
         double farDeg = -30.0;

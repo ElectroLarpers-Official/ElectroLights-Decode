@@ -2,6 +2,7 @@ package org.firstinspires.ftc.teamcode.opModes.TeleOp;
 
 import org.firstinspires.ftc.teamcode.pedroPathing.Constants;
 import org.firstinspires.ftc.teamcode.subsystems.DriveTrain2;
+import org.firstinspires.ftc.teamcode.subsystems.ShooterCalcAccelClaude;
 import org.firstinspires.ftc.teamcode.subsystems.ShooterCalc;
 
 import dev.nextftc.core.components.BindingsComponent;
@@ -50,6 +51,7 @@ public class TeleOpBlue2 extends NextFTCOpMode {
         Gamepads.gamepad2().dpadUp().whenBecomesTrue(() -> ShooterCalc.verticalShift += ShooterCalc.verticalShiftStep);
         Gamepads.gamepad2().dpadDown().whenBecomesTrue(() -> ShooterCalc.verticalShift -= ShooterCalc.verticalShiftStep);
         Gamepads.gamepad2().y().whenBecomesTrue(() -> DriveTrain2.toggleTurretPark());
+        Gamepads.gamepad2().dpadLeft().whenBecomesTrue(() -> ShooterCalcAccelClaude.toggleHiveMode());
     }
 
     @Override

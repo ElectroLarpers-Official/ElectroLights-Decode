@@ -505,6 +505,7 @@ public class DriveTrain2 implements Subsystem {
     public void initialize() {
 
         firsttime = true;
+        hiveSideLatched = false;
         feedStartNanos = 0;   // INSTANCE is static - stale across hot runs otherwise
         headingLockHeld = false;
         headingLockActive = false;
@@ -583,6 +584,61 @@ public class DriveTrain2 implements Subsystem {
 
 
     double goalY = 140.5;
+
+    // ---- BIOBUZZ HIVE aim points -------------------------------------------
+    // One hardcoded (x, y) per CELL. The solver aims at whichever cell is up
+    // for your alliance. Edit these directly (live in Panels, or here) to move
+    // an aim point - each is independent.
+    //
+    // Defaults come from the manual geometry: pivots at x = 59.25 (red) and
+    // 84.75 (blue), y = 72, window centroid 16.49 in out from the pivot.
+    // "Far" = the cell on the side away from the audience.
+    public static double hiveRedFarX = 58.4,  hiveRedFarY = 91.4;
+    public static double hiveRedAudX = 58.4,  hiveRedAudY = 51.6;
+    public static double hiveBlueFarX = 84, hiveBlueFarY = 91.4;
+    public static double hiveBlueAudX = 84, hiveBlueAudY = 51.6;
+
+    /** Aim at the cell on the robot's own side of the field: robot y below
+     *  the split -> audience cell, above -> far cell. Only the up-cell can be
+     *  scored, and it can only be entered from its own side, so drive to the
+     *  side whose cell is up. */
+    public static double hiveSideSplitY = 72.0;
+    /** Dead band around the split, inches. Without it, a robot sitting at
+     *  y = 72 would flip the aim 33 in between cells every loop and slam the
+     *  turret back and forth. Switches far above split+band, audience below
+     *  split-band, and holds its last choice in between. */
+    public static double hiveSideHysteresis = 3.0;
+    private boolean hiveAimFar = true;
+    private boolean hiveSideLatched = false;
+    private static final double DECODE_GOAL_Y = 140.5;
+
+    /** Point the solver at the up-cell's aim point or the DECODE goal, every
+     *  loop, so the toggles take effect live. */
+    private void applyGoalForMode(double robotY) {
+        if (ShooterCalcAccelClaude.hiveMode) {
+            if (!hiveSideLatched) {
+                // First loop in HIVE mode: no history, so just take the side.
+                hiveAimFar = robotY >= hiveSideSplitY;
+                hiveSideLatched = true;
+            } else if (robotY > hiveSideSplitY + hiveSideHysteresis) {
+                hiveAimFar = true;
+            } else if (robotY < hiveSideSplitY - hiveSideHysteresis) {
+                hiveAimFar = false;
+            }
+            if (alliance == -1) {
+                goalX = hiveAimFar ? hiveRedFarX : hiveRedAudX;
+                goalY = hiveAimFar ? hiveRedFarY : hiveRedAudY;
+            } else {
+                goalX = hiveAimFar ? hiveBlueFarX : hiveBlueAudX;
+                goalY = hiveAimFar ? hiveBlueFarY : hiveBlueAudY;
+            }
+        } else {
+            // Re-derive the side from position next time HIVE mode turns on.
+            hiveSideLatched = false;
+            goalX = (alliance == -1) ? 140 : 3;
+            goalY = DECODE_GOAL_Y;
+        }
+    }
     double goalX = 140;
 
     double goalXDist = 140;
@@ -739,6 +795,7 @@ public class DriveTrain2 implements Subsystem {
         Vector velocity = follower.getVelocity();
 
 
+        applyGoalForMode(currPose.getY());
         Pose turretPose = getTurretPose(currPose);
         double robotHeading = currPose.getHeading();
         Vector robotToGoalVector = getTurretToGoalVector(turretPose);
@@ -849,7 +906,9 @@ public class DriveTrain2 implements Subsystem {
         }
 
         boolean feedingNow = shooting;   // manual shoot() sequence
-        if(autoShoot==true) {
+        // DECODE launch-zone autoshoot would fire at arbitrary spots on the
+        // BIOBUZZ field, so it is off in HIVE mode; manual shoot still works.
+        if(autoShoot==true && !ShooterCalcAccelClaude.hiveMode) {
             Pose futurepose = new Pose(follower.getPose().getX() + (follower.getVelocity().getXComponent() * 0.1), follower.getPose().getY() + (follower.getVelocity().getYComponent() * 0.1), follower.getHeading());
             if (isOverlappingLaunchZone(futurepose) && robotToGoalVector.getMagnitude() > 45 || shooting==true) {
                 intakeMotor.setPower(1);
@@ -891,6 +950,9 @@ public class DriveTrain2 implements Subsystem {
         //ActiveOpMode.telemetry().addData("ballVelocity", flywheelSpeed);
         //ActiveOpMode.telemetry().addData("flywheelSpeed", requiredTPS);
         ActiveOpMode.telemetry().addData("launch?", isOverlappingLaunchZone(currPose));
+        ActiveOpMode.telemetry().addData("HIVE mode", ShooterCalcAccelClaude.hiveMode);
+        ActiveOpMode.telemetry().addData("HIVE aim", "(%.1f, %.1f)", goalX, goalY);
+        ActiveOpMode.telemetry().addData("HIVE side", hiveAimFar ? "far" : "audience");
         //ActiveOpMode.telemetry().addData("Loop Time (ms)", loopTimeMs);
         //ActiveOpMode.telemetry().addData("Avg Loop Time", avgLoopTime);
         ActiveOpMode.telemetry().addData("alliance", alliance);
