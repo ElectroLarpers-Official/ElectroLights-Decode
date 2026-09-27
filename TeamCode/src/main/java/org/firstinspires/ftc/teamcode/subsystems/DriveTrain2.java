@@ -505,6 +505,7 @@ public class DriveTrain2 implements Subsystem {
     public void initialize() {
 
         firsttime = true;
+        feedStartNanos = 0;   // INSTANCE is static - stale across hot runs otherwise
         headingLockHeld = false;
         headingLockActive = false;
         slewedTurretAngle = Double.NaN;
@@ -623,6 +624,10 @@ public class DriveTrain2 implements Subsystem {
         }
     }
     public static boolean turnedOff=false;
+
+    /** nanoTime when the current feed started, 0 when not feeding. Drives the
+     *  in-burst hood comp for BOTH feed paths: manual shoot() and zone autoshoot. */
+    private long feedStartNanos = 0;
 
     public static void shootreal(){
         //shoot = true;
@@ -843,6 +848,7 @@ public class DriveTrain2 implements Subsystem {
             ActiveOpMode.telemetry().addData("turretParked", turretParked);
         }
 
+        boolean feedingNow = shooting;   // manual shoot() sequence
         if(autoShoot==true) {
             Pose futurepose = new Pose(follower.getPose().getX() + (follower.getVelocity().getXComponent() * 0.1), follower.getPose().getY() + (follower.getVelocity().getYComponent() * 0.1), follower.getHeading());
             if (isOverlappingLaunchZone(futurepose) && robotToGoalVector.getMagnitude() > 45 || shooting==true) {
@@ -850,6 +856,7 @@ public class DriveTrain2 implements Subsystem {
                 transfer.setPower(1);
                 openStopper.schedule();
                 turnedOff=false;
+                feedingNow = true;
             } else {
                 if(turnedOff==false) {
                     closeStopper.schedule();
@@ -865,6 +872,20 @@ public class DriveTrain2 implements Subsystem {
             }
         }
 
+
+        // In-burst hood comp timer (RevAmped: wait HOOD_COMP_DELAY after shooting
+        // starts, then apply HOOD_COMP until the shooter resets). Applies from the
+        // NEXT loop, since the solver already ran this loop - one loop of lag
+        // against a 70 ms delay.
+        long feedNow = System.nanoTime();
+        if (feedingNow) {
+            if (feedStartNanos == 0) feedStartNanos = feedNow;
+        } else {
+            feedStartNanos = 0;
+        }
+        double feedMs = (feedStartNanos == 0) ? 0.0 : (feedNow - feedStartNanos) / 1e6;
+        ShooterCalcAccelClaude.burstCompActive =
+                feedStartNanos != 0 && feedMs >= ShooterCalcAccelClaude.burstCompDelayMs;
 
         //ActiveOpMode.telemetry().addData("hoodAngle", hoodAngle);
         //ActiveOpMode.telemetry().addData("ballVelocity", flywheelSpeed);

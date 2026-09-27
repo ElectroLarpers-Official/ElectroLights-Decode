@@ -31,7 +31,7 @@ public class Constants {
             ))
             .centripetalScaling(0.000);
     public static MecanumConstants driveConstants = new MecanumConstants()
-            .useBrakeModeInTeleOp(true)
+            .useBrakeModeInTeleOp(false)
             .leftFrontMotorName("frontLeft")
             .leftRearMotorName("backLeft")
             .rightFrontMotorName("frontRight")

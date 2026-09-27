@@ -185,6 +185,66 @@ public class ShooterCalcAccelClaude implements Subsystem {
      *  unaffected at any setting. */
     public static double positiveAccelGain = 0.5;
 
+    // ---- Hood compensation (ported from RevAmped's SimpleShooterMath) ------
+    // RevAmped run TWO independent hood offsets and add them to the hood
+    // position: hoodPos += hoodCompOffset + SOTMOffset. Both are here.
+    //
+    // ALL MAGNITUDES DEFAULT TO ZERO. RevAmped's numbers (-25/255, -7/255)
+    // are in THEIR hood servo's units on THEIR mechanism. This hood's signal
+    // is 0.01625 * degrees - 0.6, so 0.01625 of signal ~ 1 degree of hood.
+    // Tune from field results, starting around one degree.
+
+    // (1) IN-BURST COMP. RevAmped: HOOD_COMP applied HOOD_COMP_DELAY after
+    //     shooting starts, held until the shooter resets. Balls after the
+    //     first exit on a sagged flywheel and land short.
+    //
+    //     RevAmped use a fixed servo offset. That cannot be right at every
+    //     range on this robot: solving the trajectory exactly, a 2% slow ball
+    //     is fully recovered by ~+3.5 deg of hood at 80-100 in, but barely at
+    //     all at 45-60 in (the solver already shoots near minimum speed there).
+    //     So instead of an offset, this re-solves the hood for the SLOWER ball
+    //     every loop - exact at every range. One physical parameter:
+    //
+    /** Fraction of ball exit speed the later balls in a burst lose to
+     *  flywheel sag. MEASURE THIS: log flywheel TPS through a burst, take the
+     *  drop at ball 2's exit, and map TPS back to ball speed through the
+     *  regression. 0.03 is a starting estimate, not a measurement. */
+    public static double burstSpeedSag = 0.03;
+    public static boolean burstCompEnabled = true;
+    /** Delay from feed start to applying the comp. RevAmped's 70 ms suits
+     *  their feed spacing; with 4 balls leaving within ~200 ms (~67 ms apart)
+     *  a 70 ms delay would miss ball 2 entirely. 30 ms lands after ball 1
+     *  exits and leaves the hood servo time to move before ball 2. */
+    public static double burstCompDelayMs = 30.0;
+    /** Written by DriveTrain2 each loop from its feed timer. */
+    public static boolean burstCompActive = false;
+    /** Hood change the burst comp applied last loop, degrees. Telemetry. */
+    public static double lastBurstHoodDeltaDeg = 0.0;
+
+    // (2) VELOCITY COMP. RevAmped: HOOD_COMP_SOTM (toward, disabled/0 in
+    //     their shipped constants) and HOOD_COMP_SOTM_BACKWARDS = -7/255.
+    //     LATCHED like theirs: direction is decided when speed first crosses
+    //     the threshold and held until speed drops back under it, so it can
+    //     not flip mid-manoeuvre. This is trim for second-order effects
+    //     (drag asymmetry) - the virtual-target solve already handles the
+    //     first-order physics. Its values DELIBERATELY stay 0: your validated
+    //     dragTimeFactor = 1 (stopwatch-matched flight time) says drag is
+    //     negligible, so there is nothing for this to correct, and RevAmped
+    //     ship their own toward-term at 0. Raise only if moving shots show a
+    //     consistent direction-dependent miss that stationary shots do not.
+    //     Threshold: RevAmped use 4 in/s, which on this robot is inside the
+    //     1-4.5 in/s phantom velocity from turning in place - so it defaults
+    //     to sotmMinSpeed instead.
+    public static boolean velCompEnabled = true;
+    public static double velCompThreshold = 12.0;  // in/s
+    public static double velCompToward = 0.0;      // hood signal, TUNE
+    public static double velCompAway = 0.0;        // ADDED to Toward when retreating
+    private static boolean velCompLatched = false;
+    private static double velCompLatchedOffset = 0.0;
+
+    /** Total offset applied last loop (burst + velocity). Telemetry. */
+    public static double lastHoodCompTotal = 0.0;
+
     // ---- Velocity-history slope estimator ----------------------------------
     // Replaces Pedro's getAcceleration(), which this robot's own accel logs
     // showed is heavily pre-smoothed: at brake onset the velocity signal
@@ -216,6 +276,9 @@ public class ShooterCalcAccelClaude implements Subsystem {
     /** Clear the acceleration filter. Call from opmode init so a stale value
      *  from the previous run cannot leak into the first loops of the next. */
     public static void resetProjectionFilter() {
+        velCompLatched = false;
+        velCompLatchedOffset = 0.0;
+        burstCompActive = false;
         filteredAlongTrackAccel = 0.0;
         revAmpedActive = false;
         lastAlongTrackAccel = 0.0;
@@ -627,8 +690,54 @@ public class ShooterCalcAccelClaude implements Subsystem {
         requiredTPS = tps;
         requiredRPM = tps * 60.0 / 28.0;
 
+        // In-burst comp: re-solve the hood for a ball leaving burstSpeedSag slower.
+        // Trajectory through (r, h) at speed v is a quadratic in tan(theta):
+        //   a*t^2 - r*t + (a + h) = 0,   a = g*r^2 / (2*v^2)
+        // Take the root nearest the nominal hood. If the slow ball can no longer
+        // reach the aim point, use the angle that carries it furthest at aim
+        // height, tan(theta) = v / sqrt(v^2 - 2*g*h) - the best the hood can do.
+        lastBurstHoodDeltaDeg = 0.0;
+        if (burstCompEnabled && burstCompActive && burstSpeedSag > 0.0 && launchSpeed > 0.0) {
+            double r = virtualRange;
+            double h = targetHeight(virtualRange);
+            double v = launchSpeed * (1.0 - burstSpeedSag);
+            double a = G_IN * r * r / (2.0 * v * v);
+            double disc = r * r - 4.0 * a * (a + h);
+            double compHood = Double.NaN;
+            if (disc >= 0.0) {
+                double tLow = Math.atan((r - Math.sqrt(disc)) / (2.0 * a));
+                double tHigh = Math.atan((r + Math.sqrt(disc)) / (2.0 * a));
+                compHood = (Math.abs(tLow - hoodAngle) <= Math.abs(tHigh - hoodAngle)) ? tLow : tHigh;
+            } else if (v * v - 2.0 * G_IN * h > 0.0) {
+                compHood = Math.atan(v / Math.sqrt(v * v - 2.0 * G_IN * h));
+            }
+            if (!isNaN(compHood)) {
+                compHood = MathFunctions.clamp(compHood, HOOD_MIN, HOOD_MAX);
+                lastBurstHoodDeltaDeg = Math.toDegrees(compHood - hoodAngle);
+                hoodAngle = compHood;
+            }
+        }
+
         double hoodDegrees = Math.toDegrees(hoodAngle);
         double hoodTime = (0.01625 * hoodDegrees) - 0.6;
+
+        // Velocity comp, latched. Direction uses CURRENT velocity against the
+        // goal bearing (RevAmped: linearVel.dot(displacement) > 0).
+        if (velCompEnabled) {
+            if (!velCompLatched && currentSpeed > velCompThreshold) {
+                boolean toward = Math.cos(velTheta - goalTheta) > 0.0;
+                velCompLatchedOffset = toward ? velCompToward : velCompToward + velCompAway;
+                velCompLatched = true;
+            } else if (velCompLatched && currentSpeed <= velCompThreshold) {
+                velCompLatched = false;
+                velCompLatchedOffset = 0.0;
+            }
+        } else {
+            velCompLatched = false;
+            velCompLatchedOffset = 0.0;
+        }
+        lastHoodCompTotal = velCompLatchedOffset;
+        hoodTime += lastHoodCompTotal;
         if (isNaN(hoodTime)) hoodTime = 0.0;
 
         ActiveOpMode.telemetry().addData("range (now)", x);
@@ -637,6 +746,8 @@ public class ShooterCalcAccelClaude implements Subsystem {
         ActiveOpMode.telemetry().addData("speed now / projected",
                 currentSpeed + " / " + projectedSpeed);
         ActiveOpMode.telemetry().addData("flightTime", tf);
+        ActiveOpMode.telemetry().addData("hoodComp burst deg", lastBurstHoodDeltaDeg);
+        ActiveOpMode.telemetry().addData("hoodComp vel", lastHoodCompTotal);
         ActiveOpMode.telemetry().addData("solver iters / converged",
                 iterations + " / " + converged);
         ActiveOpMode.telemetry().addData("aAlongV (filt)", filteredAlongTrackAccel);
